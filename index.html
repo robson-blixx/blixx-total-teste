@@ -185,23 +185,25 @@ $('metric-close').onclick=()=>$('metric-dialog').close();root.setEnvironment('ho
 'use strict';
 const FIELDS=["Awb", "Endereco", "Bairro", "Cidade", "Nome Responsavel", "Tipo Rota", "Caf", "Dt_Vencimento_LM", "Dt_Vencimento_OTD", "Dt_Embarque_Recebido", "Hr_Embarque_Recebido", "Dt_Entrada_LM", "Hr_Entrada_LM", "Dt_Em_Rota", "Hr_Em_Rota", "Dt_Transferencia_Sec", "Hr_Transferencia_Sec", "Dt_Receb_Transferencia_Sec", "Hr_Receb_Transferencia_Sec", "Dt_Processo_Entrega", "Hr_Processo_Entrega", "Dt_Ultima_NC", "Status_Ultima_NC", "Dt_Entrega_Realizada", "Hr_Entrega_Realizada", "Dt_Ultimo_Status", "Hr_Ultimo_Status", "Desc_Ultimo_Status", "Etapa_Ultimo_Status", "Aging_Ultimo_Status", "Desc_Aging_Ultimo_Status", "Multiplas", "Classificação_Ven_LM", "Atualizacao"];
 const DATE_FIELDS=['Dt_Entrada_LM','Dt_Recebido_CD','Dt_Ultimo_Status'];
-function organize(base,book,X){
+function missingFields(base){const labels=new Set((base?.columns??[]).map(c=>String(c.label).trim().toLowerCase()));return [...new Set([...FIELDS,...DATE_FIELDS])].filter(f=>!labels.has(f.trim().toLowerCase()));}
+function organize(base,book,X,options={}){
  if(!base)throw Error('Anexe a planilha original primeiro.');
  const normalize=s=>String(s).trim().toLowerCase(),map=new Map();
  for(const c of base.columns){const k=normalize(c.label);if(map.has(k)&&FIELDS.some(f=>normalize(f)===k))throw Error('Cabeçalho repetido: '+c.label);map.set(k,c.c);}
- const missing=[...new Set([...FIELDS,...DATE_FIELDS])].filter(f=>!map.has(normalize(f)));if(missing.length)throw Error('Colunas ausentes: '+missing.join(', '));
- const get=(r,f)=>base.sheet[X.utils.encode_cell({r,c:map.get(normalize(f))})];
+ const missing=missingFields(base);if(missing.length&&!options.allowMissing)throw Error('Colunas ausentes: '+missing.join(', '));
+ const get=(r,f)=>{const c=map.get(normalize(f));return c===undefined?undefined:base.sheet[X.utils.encode_cell({r,c})];};
  const rows=[];let before=0,invalid=0,notes=0;
  for(const r of base.rows){const awb=String(get(r,'Awb')?.v??'').trim();if(!awb||/^filtros aplicados\s*:/i.test(awb)){notes++;continue;}
  const dates=DATE_FIELDS.map(field=>root.TotalAnalytics.day(get(r,field)?.v,X,!!book.Workbook?.WBProps?.date1904));if(dates.some(date=>!date)){invalid++;continue;}if(dates.some(date=>date<'2026-08-24')){before++;continue;}rows.push(r);}
  const sheet=X.utils.aoa_to_sheet([FIELDS.map(f=>f==='Nome Responsavel'?'Motorista':f)]);
- rows.forEach((r,i)=>FIELDS.forEach((f,c)=>{const cell=get(r,f);if(!cell||cell.v==null)return;const copy={t:cell.t,v:cell.v};if(cell.z)copy.z=cell.z;if(f==='Awb'){copy.t='s';copy.v=X.utils.format_cell(cell);delete copy.z;}sheet[X.utils.encode_cell({r:i+1,c})]=copy;}));
+ rows.forEach((r,i)=>FIELDS.forEach((f,c)=>{const cell=get(r,f);if(!cell||cell.v==null)return;const copy={t:cell.t,v:cell.v};if(cell.z)copy.z=cell.z;if(f==='Awb'){copy.t='s';copy.v=X.utils.format_cell({...cell});delete copy.z;}sheet[X.utils.encode_cell({r:i+1,c})]=copy;}));
  sheet['!ref']=X.utils.encode_range({s:{r:0,c:0},e:{r:rows.length,c:FIELDS.length-1}});sheet['!cols']=FIELDS.map(f=>({wch:Math.max(18,f.length+2)}));sheet['!autofilter']={ref:sheet['!ref']};
  const output=X.utils.book_new();X.utils.book_append_sheet(output,sheet,'Informações necessárias');output.Workbook={WBProps:{date1904:!!book.Workbook?.WBProps?.date1904}};
- return {book:output,sheet,rows,before,invalid,notes};
+ return {book:output,sheet,rows,before,invalid,notes,missing};
 }
-root.TotalOrganizer={FIELDS,DATE_FIELDS,organize};
+root.TotalOrganizer={FIELDS,DATE_FIELDS,missingFields,organize};
 })(globalThis);
+
 
 (function(root){
 'use strict';
@@ -308,7 +310,7 @@ function renderOutput(){if(!organized)return;const host=$('organized-table');hos
 function toggleOutput(){if(!organized)return;$('organized-preview').hidden=!$('organized-preview').hidden;if(!$('organized-preview').hidden)renderOutput();}
 function downloadOutput(){if(!organized)return;try{X.writeFile(organized.book,'BLIXX - Informacoes necessarias - '+new Date().toLocaleDateString('sv-SE')+'.xlsx',{compression:true});}catch(e){alertText('Não foi possível baixar: '+e.message,'error');}}
 
-$('hero-filter').onclick=()=>{try{const result=root.TotalOrganizer.organize(base,book,X);organized=result;outputPage=0;if($('filtered-badge'))$('filtered-badge').textContent='Dados da planilha filtrada';const description=`${fmt(result.rows.length)} registros · 34 colunas · desde 24/08/2026`;const report=`${description}. Excluídos: ${fmt(result.before)} anteriores ao corte, ${fmt(result.invalid)} com uma ou mais das três datas vazias ou inválidas e ${fmt(result.notes)} linhas sem pedido.`;$('output-summary').textContent=description;$('organized-info').textContent=report;$('organized-preview').hidden=true;for(const id of ['hero-output-view','hero-output-download','view-output','download-output'])$(id).disabled=false;root.renderDriverAnalytics(inspectBase(result.book,result.book.SheetNames[0],X),result.book,X);root.renderOperations?.(result.book,X);root.prepareReports?.(result.book,X);$('analytics-panel').hidden=false;root.setEnvironment?.('home');$('filter-prompt').hidden=true;alertText(report,'success');}catch(e){resetOrganized();alertText(e.message,'error');}};
+$('hero-filter').onclick=()=>{try{if(!base)return;const missing=root.TotalOrganizer.missingFields(base);if(missing.length){const warning='A original está sem '+missing.length+' coluna(s) necessária(s):\n\n'+missing.map(f=>'• '+(f==='Nome Responsavel'?'Nome Responsavel (Motorista)':f)).join('\n')+'\n\nA filtragem ficará incompleta e os indicadores podem ficar incorretos. As colunas ausentes ficarão vazias. Pedidos sem AWB ou sem uma das três datas obrigatórias serão excluídos.\n\nDeseja filtrar mesmo assim?';if(!root.confirm(warning)){alertText('Filtragem cancelada. Corrija a original e anexe novamente. Colunas ausentes: '+missing.join(', '),'error');return;}}const result=root.TotalOrganizer.organize(base,book,X,{allowMissing:missing.length>0});organized=result;outputPage=0;if($('filtered-badge'))$('filtered-badge').textContent='Dados da planilha filtrada';const description=`${fmt(result.rows.length)} registros · 34 colunas · desde 24/08/2026`;const report=`${description}. Excluídos: ${fmt(result.before)} anteriores ao corte, ${fmt(result.invalid)} com uma ou mais das três datas vazias ou inválidas e ${fmt(result.notes)} linhas sem pedido.`;$('output-summary').textContent=description;$('organized-info').textContent=report;$('organized-preview').hidden=true;for(const id of ['hero-output-view','hero-output-download','view-output','download-output'])$(id).disabled=false;root.renderDriverAnalytics(inspectBase(result.book,result.book.SheetNames[0],X),result.book,X);root.renderOperations?.(result.book,X);root.prepareReports?.(result.book,X);$('analytics-panel').hidden=false;root.setEnvironment?.('home');$('filter-prompt').hidden=true;alertText(report+(result.missing.length?' ATENÇÃO: filtragem incompleta autorizada. Colunas ausentes: '+result.missing.join(', '):''),result.missing.length?'error':'success');}catch(e){resetOrganized();alertText(e.message,'error');}};
 $('hero-output-view').onclick=()=>{setView('organized');toggleOutput();};$('view-output').onclick=toggleOutput;
 $('hero-output-download').onclick=downloadOutput;$('download-output').onclick=downloadOutput;
 $('organized-prev').onclick=()=>{if(outputPage){outputPage--;renderOutput();}};$('organized-next').onclick=()=>{if(organized&&(outputPage+1)*50<organized.rows.length){outputPage++;renderOutput();}};
