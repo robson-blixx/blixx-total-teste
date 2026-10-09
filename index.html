@@ -212,6 +212,11 @@ $('report-open-driver').onclick=()=>root.openDriver?.($('report-driver').value);
 $('report-export').onclick=()=>{if(!selected.length)return;const sheet=X.utils.aoa_to_sheet([base.columns.map(c=>c.label)]);selected.forEach((row,i)=>base.columns.forEach((column,c)=>{const cell=base.sheet[X.utils.encode_cell({r:row.r,c:column.c})];if(cell)sheet[X.utils.encode_cell({r:i+1,c})]={...cell};}));sheet['!ref']=X.utils.encode_range({s:{r:0,c:0},e:{r:selected.length,c:base.columns.length-1}});sheet['!cols']=base.sheet['!cols'];sheet['!autofilter']={ref:sheet['!ref']};const out=X.utils.book_new();X.utils.book_append_sheet(out,sheet,'Relatório individual');out.Workbook=book.Workbook;X.writeFile(out,'BLIXX - Relatorio - '+$('report-driver').value.replace(/[<>:"/\\|?*]/g,'')+'.xlsx',{compression:true});};
 root.prepareReports=(filtered,lib)=>{book=filtered;X=lib;base=root.TotalDashboard.inspectBase(book,book.SheetNames[0],X);rows=root.TotalAnalytics.extract(base,book,X).rows;const old=$('report-driver').value;$('report-driver').replaceChildren();const first=document.createElement('option');first.value='';first.textContent='Selecione um motorista';$('report-driver').append(first);for(const name of [...new Set(rows.map(r=>r.driver).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'))){const option=document.createElement('option');option.value=name;option.textContent=name;$('report-driver').append(option);}$('report-driver').value=rows.some(r=>r.driver===old)?old:'';$('env-details').disabled=$('env-driver').disabled=false;report();};
 root.clearReports=()=>{reportFilter.reset();metricFilter.reset();book=null;base=null;rows=[];selected=[];$('env-details').disabled=$('env-driver').disabled=true;for(const id of ['metric-dialog'])if($(id).open)$(id).close();root.setEnvironment('home');};
+// Snapshot exclusively from the filtered workbook, independent of consultation filters.
+root.captureDriveReports=()=>{
+ if(!book||!base||!rows.length)throw Error('Anexe a original e clique em Filtrar antes de enviar.');
+ return {X,date:today(),date1904:!!book.Workbook?.WBProps?.date1904,columns:base.columns.map(c=>c.label),rows:rows.map(row=>({driver:row.driver,lastDay:row.lastDay,cells:base.columns.map(column=>{const cell=base.sheet[X.utils.encode_cell({r:row.r,c:column.c})];return cell?{...cell}:null;})}))};
+};
 function explain(id){const date=today(),shift=n=>{const d=new Date(date+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10);};const metricSource=root.referenceRows??rows;const open=metricSource.filter(r=>!r.delivered);const rules={overdue:['Já vencidos','Pedidos sem entrega registrada cujo prazo LM é anterior a hoje.',r=>r.dueDay&&r.dueDay<date],today:['Vencendo hoje','Pedidos sem entrega registrada cujo prazo LM é hoje.',r=>r.dueDay===date],future:['No prazo','Pedidos sem entrega registrada cujo prazo LM está após hoje.',r=>r.dueDay>date],unknown:['Sem previsão','Pedidos sem entrega registrada sem uma data de prazo LM válida.',r=>!r.dueDay],tomorrow:['Vence amanhã','Pedidos sem entrega registrada com prazo LM para amanhã.',r=>r.dueDay===shift(1)],after:['Depois de amanhã','Pedidos sem entrega registrada com prazo LM para daqui a dois dias.',r=>r.dueDay===shift(2)],later:['Prazos futuros','Pedidos sem entrega registrada com prazo LM posterior a depois de amanhã.',r=>r.dueDay>shift(2)]};if(rules[id]){const [title,description,predicate]=rules[id];metricRows=open.filter(predicate);$('metric-title').textContent=title;$('metric-description').textContent=description;}else{const period=id==='day'?date:date.slice(0,7);metricRows=metricSource.filter(r=>r.deliveredDay&&r.dueDay&&(id==='day'?r.deliveredDay===period:r.deliveredDay.slice(0,7)===period));const n=metricRows.filter(r=>r.deliveredDay<=r.dueDay).length;$('metric-title').textContent='SLA '+(id==='day'?'do dia':'do mês');$('metric-description').textContent=`Entregas realizadas até o prazo LM ÷ entregas com prazo válido neste período. ${n} no prazo de ${metricRows.length} entregas. Sem entregas elegíveis, aparece “—”.`;}metricFilter.reset();renderMetric();$('metric-dialog').showModal();}
 for(const id of ['overdue','today','future','unknown','tomorrow','after','later','day','month']){const value=$(id==='day'||id==='month'?'sla-'+id:'due-'+id),card=value.closest?.('.reference-card');if(card){card.setAttribute('role','button');card.tabIndex=0;card.onclick=()=>explain(id);card.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();explain(id);}};}
 }
@@ -401,5 +406,101 @@ function save(){if(!db)return;const tx=db.transaction('original','readwrite');tx
 $('aca-input').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{load(await file.arrayBuffer(),file.name,new Date().toISOString());save();}catch(err){notice(err.message,true);}finally{e.target.value='';}};
 $('aca-filter').onclick=()=>{if(!parsed)return;filtered=parsed.approved.map(r=>({...r,values:[...r.values]}));$('aca-results').hidden=false;if(!section.hidden)$('filtered-badge').textContent='Acareações · dados da filtrada';for(const id of ['aca-output','aca-download'])$(id).disabled=!filtered.length;$('aca-summary').textContent=fmt(filtered.length)+' tickets · 15 campos · abertura desde 24/08/2026';mode='all';$('aca-mode').value='all';$('aca-ticket').value='';consult.reset();cards();render();notice(filtered.length?'':'Nenhuma acareação válida a partir de 24/08/2026 nesta original.');};
 try{const request=indexedDB.open('blixx-acareacoes-v1',1);request.onupgradeneeded=()=>request.result.createObjectStore('original');request.onsuccess=()=>{db=request.result;const get=db.transaction('original').objectStore('original').get('acareacoes');get.onsuccess=()=>{if(get.result)try{load(get.result.buffer,get.result.name,get.result.time);}catch(e){notice(e.message,true);}};};}catch(e){notice('O armazenamento local não está disponível; anexe a original a cada abertura.');}
+})(globalThis);
+</script><script>(function(root){
+'use strict';
+const CONFIG=Object.freeze({email:'blixxjvi@gmail.com',folder:'1xuLrvaTJ_2_xNouuwFLXJWndNAgxke-V',client:'263883117179-tnpilnnv0ub57ei3pc9hp8f3rk0mtj3u.apps.googleusercontent.com',app:'263883117179',key:'AIzaSyD-YTjtmmoROYw2ctdz1IQoSQWACkyenzk'});
+const FOLDER='application/vnd.google-apps.folder',XLSX='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+function prepare(snapshot){
+ const groups=new Map();
+ for(const row of snapshot.rows){const name=row.driver||'Sem motorista';if(!groups.has(name))groups.set(name,[]);groups.get(name).push(row);}
+ return [...groups].sort(([a],[b])=>a.localeCompare(b,'pt-BR')).map(([driver,rows])=>{
+  const X=snapshot.X,sheet=X.utils.aoa_to_sheet([snapshot.columns]);
+  rows.forEach((row,r)=>row.cells.forEach((cell,c)=>{if(cell)sheet[X.utils.encode_cell({r:r+1,c})]={...cell};}));
+  sheet['!ref']=X.utils.encode_range({s:{r:0,c:0},e:{r:rows.length,c:snapshot.columns.length-1}});
+  sheet['!autofilter']={ref:sheet['!ref']};sheet['!cols']=snapshot.columns.map(()=>({wch:22}));
+  const book=X.utils.book_new();X.utils.book_append_sheet(book,sheet,'Relatório do dia');book.Workbook={WBProps:{date1904:snapshot.date1904}};
+  return {driver,count:rows.length,date:snapshot.date,book};
+ });
+}
+root.BlixxDriveReports={prepare};if(typeof document==='undefined')return;
+const $=id=>document.getElementById(id),nav=$('env-driver').parentElement;
+const style=document.createElement('style');style.textContent=`
+.drive-report-control{position:relative;margin-left:auto;flex:0 0 auto;align-self:center}.drive-report-control[hidden]{display:none}
+.environment-nav .drive-report-button{display:flex;align-items:center;gap:8px;white-space:nowrap;padding:10px 12px}.drive-report-button svg{width:19px;height:19px;flex:none}
+.drive-report-menu{position:absolute;right:0;top:calc(100% + 7px);z-index:30;width:min(310px,calc(100vw - 40px));padding:12px;background:#111e33;border:1px solid #39465e;border-radius:12px;box-shadow:0 14px 32px #0008}
+.drive-report-menu[hidden],.drive-report-status[hidden]{display:none}.drive-report-menu p{font-size:11px;line-height:1.5;margin:0 0 9px;color:#b9c9e3;overflow-wrap:anywhere}
+.environment-nav .drive-report-menu button{width:100%;text-align:left;background:#1c2c46;padding:11px;border-radius:8px}.drive-report-status{position:absolute;right:0;top:calc(100% + 7px);z-index:29;width:min(310px,calc(100vw - 40px));background:#111e33;border:1px solid #39465e;padding:10px 12px;border-radius:10px;font-size:12px;line-height:1.5;box-shadow:0 10px 24px #0007;overflow-wrap:anywhere}
+@media(max-width:760px){.drive-report-control{margin-left:auto}.environment-nav .drive-report-button{flex:none}}
+`;document.head.append(style);
+const wrap=document.createElement('div');wrap.className='drive-report-control';wrap.hidden=true;
+wrap.innerHTML='<button class="drive-report-button" id="drive-report-toggle" type="button" aria-expanded="false" aria-controls="drive-report-menu" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#0F9D58" d="M8 2h8l-4 7-8 14-4-7z"/><path fill="#FFC107" d="M16 2l8 14h-8L8 2z"/><path fill="#4285F4" d="M4 23l4-7h16l-4 7z"/></svg><span>Enviar relatório</span><span aria-hidden="true">▾</span></button><div class="drive-report-menu" id="drive-report-menu" hidden><p>Todos os motoristas · filtrada atual<br>Destino: blixxjvi@gmail.com<br>Motoristas Total Relatórios</p><button type="button" id="drive-report-save">Salvar relatório do dia</button></div><div class="drive-report-status" id="drive-report-status" role="status" aria-live="polite" hidden></div>';
+nav.append(wrap);
+let token=null,expires=0,client=null,busy=false,ready=false,rootAllowed=false,statusTimer;
+function menu(open){$('drive-report-menu').hidden=!open;$('drive-report-toggle').setAttribute('aria-expanded',String(open));if(open)$('drive-report-status').hidden=true;}
+function status(message,temporary=false){clearTimeout(statusTimer);$('drive-report-status').textContent=message;$('drive-report-status').hidden=!message;if(temporary)statusTimer=setTimeout(()=>$('drive-report-status').hidden=true,12000);}
+function visibility(){wrap.hidden=$('driver-workspace').hidden;if(wrap.hidden){menu(false);$('drive-report-status').hidden=true;}}
+new MutationObserver(visibility).observe($('driver-workspace'),{attributes:true,attributeFilter:['hidden']});visibility();
+$('drive-report-toggle').onclick=()=>{if(!busy)menu($('drive-report-menu').hidden);};
+document.addEventListener('click',e=>{if(!wrap.contains(e.target)){menu(false);if(!busy)$('drive-report-status').hidden=true;}});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('drive-report-menu').hidden){menu(false);$('drive-report-toggle').focus();if(!busy)$('drive-report-status').hidden=true;}});
+function script(url){return new Promise((resolve,reject)=>{const s=document.createElement('script');s.src=url;s.async=true;s.onload=resolve;s.onerror=()=>reject(Error('Não foi possível carregar a conexão Google. Recarregue a página.'));document.head.append(s);});}
+const loaded=Promise.all([script('https://accounts.google.com/gsi/client'),script('https://apis.google.com/js/api.js').then(()=>new Promise((resolve,reject)=>root.gapi.load('picker',{callback:resolve,onerror:()=>reject(Error('Não foi possível carregar o seletor de pastas.')),timeout:15000,ontimeout:()=>reject(Error('O seletor de pastas demorou a carregar. Recarregue a página.'))})))])
+ .then(()=>{client=root.google.accounts.oauth2.initTokenClient({client_id:CONFIG.client,scope:'https://www.googleapis.com/auth/drive.file',login_hint:CONFIG.email,callback:()=>{}});ready=true;$('drive-report-toggle').disabled=false;})
+ .catch(e=>{status(e.message);$('drive-report-toggle').disabled=false;});
+function authorize(){
+ if(token&&expires>Date.now()+60000)return Promise.resolve();
+ return new Promise((resolve,reject)=>{client.callback=r=>{if(r.error){reject(Error('Autorização não concluída. Entre com '+CONFIG.email+'.'));return;}token=r.access_token;expires=Date.now()+Number(r.expires_in)*1000;rootAllowed=false;resolve();};client.error_callback=()=>reject(Error('A janela de autorização foi fechada ou bloqueada. Tente novamente.'));client.requestAccessToken({prompt:'consent',login_hint:CONFIG.email});});
+}
+async function api(route,options={},upload=false){
+ if(!token||expires<Date.now()+10000)throw Error('A sessão Google expirou. Clique em enviar novamente para autorizar.');
+ const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),60000);
+ try{const res=await fetch('https://www.googleapis.com/'+(upload?'upload/drive/v3/':'drive/v3/')+route,{...options,signal:controller.signal,headers:{...options.headers,Authorization:'Bearer '+token}});
+  if(res.status===401){token=null;rootAllowed=false;throw Error('A sessão Google expirou. Clique em enviar novamente.');}
+  if(!res.ok){let message='';try{message=(await res.json()).error?.message||'';}catch{}const error=Error(res.status===403?'O Google não autorizou esta operação. Confira a conta da empresa, a pasta e a Drive API.':res.status===404?'A pasta não está autorizada. Selecione Motoristas Total Relatórios no Google.':'O envio falhou ('+res.status+'). '+message);error.status=res.status;throw error;}
+  return await res.json();
+ }catch(e){if(e.name==='AbortError')throw Error('O Google demorou a responder. Confira sua conexão e envie novamente.');throw e;}finally{clearTimeout(timer);}
+}
+function pickFolder(){return new Promise((resolve,reject)=>{
+ const p=root.google.picker,view=new p.DocsView(p.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true);
+ const picker=new p.PickerBuilder().addView(view).setOAuthToken(token).setDeveloperKey(CONFIG.key).setAppId(CONFIG.app).setOrigin(location.origin).setTitle('Selecione Motoristas Total Relatórios').setCallback(data=>{
+  if(data.action===p.Action.CANCEL){picker.setVisible(false);reject(Error('Envio cancelado. Nenhum relatório foi enviado.'));}
+  if(data.action===p.Action.PICKED){picker.setVisible(false);if(data.docs?.[0]?.id!==CONFIG.folder){reject(Error('Selecione a pasta Motoristas Total Relatórios da empresa. O destino é fixo.'));return;}resolve();}
+ }).build();picker.setVisible(true);
+});}
+async function destination(){
+ const about=await api('about?fields=user(emailAddress)');
+ if(about.user?.emailAddress?.toLowerCase()!==CONFIG.email){token=null;rootAllowed=false;throw Error('Conta incorreta. Autorize o envio com '+CONFIG.email+'. Nenhum arquivo foi enviado.');}
+ const check=()=>api('files/'+CONFIG.folder+'?fields=id,name,mimeType,trashed,capabilities(canAddChildren)');
+ let folder;try{folder=await check();}catch(e){if(![403,404].includes(e.status))throw e;status('Selecione a pasta Motoristas Total Relatórios na janela do Google.');await pickFolder();folder=await check();}
+ if(folder.trashed||folder.mimeType!==FOLDER||!folder.capabilities?.canAddChildren)throw Error('A pasta de destino não permite criar relatórios. Confira o acesso da conta da empresa.');rootAllowed=true;
+}
+const quote=s=>String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+async function find(parent,name,mime){
+ const q="'"+quote(parent)+"' in parents and trashed = false and name = '"+quote(name)+"'"+(mime?" and mimeType = '"+mime+"'":'');
+ const data=await api('files?'+new URLSearchParams({q,fields:'files(id,name,mimeType),nextPageToken',pageSize:'100'}));
+ if(data.nextPageToken||data.files.length>1)throw Error('Há arquivos ou pastas duplicados com o nome '+name+'. Confira o Drive antes de reenviar.');return data.files[0]||null;
+}
+async function ensureFolder(parent,name){const found=await find(parent,name,FOLDER);if(found)return found.id;const created=await api('files?fields=id',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,mimeType:FOLDER,parents:[parent]})});return created.id;}
+async function saveFile(parent,report,X){
+ const name='Relatório - '+report.date+'.xlsx',existing=await find(parent,name);
+ if(existing&&existing.mimeType!==XLSX)throw Error('Já existe um arquivo incompatível chamado '+name+'.');
+ const bytes=X.write(report.book,{bookType:'xlsx',type:'array',compression:true});
+ const metadata={name,mimeType:XLSX,description:'Posição da planilha filtrada em '+report.date+'. Motorista: '+report.driver+'. '+report.count+' pedidos. Enviado pelo painel BLIXX Total.'};
+ if(!existing)metadata.parents=[parent];
+ const boundary='blixx_'+crypto.randomUUID().replace(/-/g,'');
+ const body=new Blob(['--'+boundary+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n',JSON.stringify(metadata),'\r\n--'+boundary+'\r\nContent-Type: '+XLSX+'\r\n\r\n',new Uint8Array(bytes),'\r\n--'+boundary+'--\r\n'],{type:'multipart/related; boundary='+boundary});
+ await api('files'+(existing?'/'+existing.id:'')+'?uploadType=multipart&fields=id',{method:existing?'PATCH':'POST',headers:{'Content-Type':body.type},body},true);
+}
+$('drive-report-save').onclick=async()=>{
+ if(busy)return;menu(false);if(!ready){status('A conexão Google ainda não está pronta. Recarregue a página se não carregar.');return;}
+ let snapshot,reports;try{snapshot=root.captureDriveReports();reports=prepare(snapshot);}catch(e){status(e.message);return;}
+ busy=true;$('drive-report-toggle').disabled=true;const label=$('drive-report-toggle').querySelector('span');label.textContent='Enviando…';let sent=0;
+ try{await authorize();await destination();
+  for(const report of reports){status('Enviando '+(sent+1)+' de '+reports.length+' · '+report.driver);const driver=await ensureFolder(CONFIG.folder,report.driver),month=await ensureFolder(driver,report.date.slice(0,7));await saveFile(month,report,snapshot.X);sent++;}
+  status(sent+' relatórios de '+snapshot.date+' enviados ao Drive da empresa. Dias anteriores preservados.',true);
+ }catch(e){status((sent?sent+' de '+reports.length+' relatórios enviados. ':'')+e.message+' Você pode reenviar para concluir.');}
+ finally{busy=false;$('drive-report-toggle').disabled=false;label.textContent='Enviar relatório';}
+};
 })(globalThis);
 </script></body></html>
